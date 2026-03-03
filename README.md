@@ -1,38 +1,96 @@
-🌟 Fourier-Optimized HQS-Based Image Restoration본 프로젝트는 2026 GIST Intelligent Vision Lab (지도교수: 소재웅) 겨울 인턴십 기간 동안 숭실대학교 김종민이 진행한 연구로, HQS(Half-Quadratic Splitting) 알고리즘과 NAFNet을 결합하여 이미지 복원(Denoising & Deblurring)을 수행하는 구현체입니다.복잡한 역문제(Inverse Problem)를 풀기 쉬운 두 개의 작은 하위 문제(Data Term & Prior Term)로 분할하여 최적화하며, 퓨리에 도메인(Fourier domain) 최적화를 활용하여 연산 효율을 높였습니다.🧠 Algorithm OverviewHQS Optimization이미지 복원의 핵심 목적은 노이즈와 블러가 섞인 이미지 $y$에서 깨끗한 원본 이미지 $x$를 복원하는 것이며, 이를 위해 다음의 최적화 문제를 풉니다.$$\min_x ||y - Hx||^2 + \lambda\Phi(x)$$$y$: Noisy observation (입력 이미지)$H$: Degradation operator (블러, 다운샘플링 등)$\Phi(x)$: Prior term (NAFNet denoiser를 통한 규제)$\lambda$: Regularization parameterHQS 알고리즘은 보조 변수 $z$를 도입하여 위 수식을 두 개의 서브 문제(Subproblem)로 분리하여 번갈아가며 풉니다.1. Data Subproblem (Fourier domain closed-form)$$x^{k+1} = \arg\min_x ||y - Hx||^2 + \rho||x - z^{k}||^2$$이를 고속 푸리에 변환(FFT)을 통해 계산하면 블러(Blur) 연산을 닫힌 형태(Closed-form)로 역산할 수 있습니다.$$x^{k+1} = \mathcal{F}^{-1} \left[ \frac{\mathcal{F}(H)^* \cdot \mathcal{F}(y) + \rho \cdot \mathcal{F}(z^k)}{|\mathcal{F}(H)|^2 + \rho} \right]$$2. Prior Subproblem (NAFNet denoiser)$$z^{k+1} = \text{NAFNet}(x^{k+1}, \sigma)$$사전 학습된 NAFNet을 활용하여 이미지의 노이즈를 제거하는 데 집중합니다.Network StructurePlaintextInput (noisy y) ──→ [HQS Iterations] ──→ Output (restored x)
-                           ↓
-               ┌───────────┴───────────┐
-               │                       │
-         Fourier Data Step      NAFNet Prior
-           (closed-form)         (learnable)
-               │                       │
-               └───────────┬───────────┘
-                           ↓
-                    Next Iteration
-🏗️ Architecture & Methodologies본 레포지토리는 위 알고리즘을 두 가지 주요 접근 방식으로 구현했습니다.HQS-PnP (Plug-and-Play): 수학적 최적화 틀은 고정하고, Prior Step에 사전 학습된 NAFNet을 결합하는 방식HQS-Unrolled: FFT 기반의 Data Step과 NAFNet 기반의 Prior Step이 상호작용하는 반복(Iteration) 과정 전체를 하나의 네트워크로 취급하여 End-to-End로 학습시키는 방식📂 Repository Structure프로젝트는 크게 두 가지 방법론에 따라 폴더가 분리되어 있습니다. 공통적으로 사용되는 12가지 Blur Kernel은 kernels_12.npy에 정의되어 있습니다.Plaintext├── HQS-PnP/                 # Plug-and-Play 기반 알고리즘 구현부
-│   ├── train.py             # NAFNet Fine-tuning
-│   ├── valid.py             # Denoising 성능 검증
-│   ├── valid_deblur.py      # Deblurring 일반화 성능 검증
-│   ├── compares.py          # 모델 간 성능 비교 스크립트
-│   └── models.py            # HQS_PnP 클래스 및 NAFNet 구조
+# 🌟 Fourier-Optimized HQS-Based Image Restoration
+
+[cite_start]본 프로젝트는 2026 GIST Winter Internship Program 기간 동안 숭실대학교 김종민이 진행한 연구입니다[cite: 529, 531]. [cite_start]복잡하고 풀기 어려운 이미지 복원 문제를 풀기 쉬운 두 개의 작은 문제(데이터 일치 + 노이즈 제거)로 쪼개서 번갈아 가며 푸는 **HQS(Half-Quadratic Splitting)** 알고리즘 기반의 Denoiser 및 Deblurrer 구현체입니다[cite: 530, 546, 547].
+
+## 🧠 Algorithm Overview
+
+### HQS Optimization
+[cite_start]흐릿한 이미지($y$)에서 깨끗한 이미지($x$)를 찾으려면 다음을 최소화해야 합니다[cite: 549].
+
+$$\hat{x} = \arg\min_x ||Ax-y||^2 + \lambda\Phi(x)$$ 
+
+[cite_start]여기서 $||Ax-y||^2$는 데이터항(Data Term), $\lambda\Phi(x)$는 규제항(Prior Term)을 의미합니다[cite: 550, 551]. [cite_start]HQS는 보조 변수 $z$를 도입하여 이 문제를 두 단계로 쪼개어 반복(Iteration)해서 풉니다[cite: 562, 573].
+
+**1. [cite_start]Data Step (x-update):** 노이즈 제거는 무시하고, 우선 블러(Blur)부터 역으로 해결하는 단계입니다[cite: 574, 575]. [cite_start]FFT(고속 푸리에 변환)를 이용해 닫힌 형태(closed-form)로 연산합니다[cite: 576, 590].
+$$x_{k+1} = \arg\min_x ||Ax-y||^2 + \mu||x-z_k||^2$$ 
+
+**2. [cite_start]Prior Step (z-update):** 반대로 블러는 무시하고, 이미지를 깨끗하게 Denoising 하는 것에 집중하는 단계입니다[cite: 577, 578]. [cite_start]이 과정에 잘 학습된 Denoiser(NAFNet)를 활용합니다[cite: 579, 594].
+$$z_{k+1} = \arg\min_z \frac{\mu}{2}||x_{k+1}-z||^2 + \lambda\Phi(z)$$ 
+
+### Network Structure
+```text
+Input (noisy y + noise map) ──→ [HQS Iterations] ──→ Output (restored x)
+                                     ↓
+                         ┌───────────┴───────────┐
+                         │                       │
+                  Fourier Data Step         NAFNet Prior
+                    (closed-form)           (learnable)
+                         │                       │
+                         └───────────┬───────────┘
+                                     ↓
+                               Next Iteration
+
+```
+
+## 🏗️ Architecture & Methodologies
+본 레포지토리는 HQS 알고리즘을 두 가지 방식으로 구현 및 비교합니다.
+
+
+HQS-PnP (Plug-and-Play): 수학적 틀(HQS)은 그대로 두고, Prior Step의 Denoiser(NAFNet)만 따로 학습시켜 부품처럼 갈아 끼우는 방식입니다.
+
+
+HQS-Unrolled: FFT 연산과 NAFNet이 서로 주고받는 반복 과정 전체를 하나의 네트워크로 보고 통째로 학습시키는 방식입니다.
+
+## 📂 Repository Structure
+프로젝트는 크게 두 가지 방법론에 따라 폴더가 분리되어 있습니다. 공통적으로 사용되는 12가지 Blur Kernel은 kernels_12.npy에 정의되어 있습니다.
+
+
+```text
+├── HQS-PnP/                 # Plug-and-Play 기반 알고리즘 구현부  
+│   ├── train.py             # NAFNet Fine-tuning  
+│   ├── valid.py             # Denoising 성능 검증  
+│   ├── valid_deblur.py      # Deblurring 일반화 성능 검증  
+│   ├── compares.py          # 모델 간 성능 비교 스크립트  
+│   └── models.py            # HQS_PnP 클래스 및 NAFNet 구조  
 │
-├── HQS-Unrolled/            # Unrolled Network 기반 구현부
-│   ├── run_hqs_fnaf.py      # HQS Unrolled 모델 학습 및 테스트 (Full-tuning, LoRA 등)
-│   ├── run_nafnet.py        # 순수 NAFNet(HQS 제외) 학습 코드
-│   ├── compare_models.py    # 다양한 튜닝 전략이 적용된 모델 성능 일괄 비교
-│   ├── experi.py            # 실제 노이즈와 맵 노이즈 불일치(Mismatch) 실험
-│   ├── lora.py              # NAFNet의 Conv2d 레이어에 적용할 LoRA 모듈
-│   └── visualize_deblur.py  # 블러 커널 적용 및 복원 결과 시각화
-│
-└── kernels_12.npy           # 12종류의 Blur Kernel 데이터 (공통)
-⚙️ RequirementsPython 3.8+PyTorchOpenCV (cv2)NumPyMatplotlib🚀 Usage1. HQS-PnP 모델 사용법HQS 구조 내에서 NAFNet을 부품처럼 활용하는 방식입니다.Bash# NAFNet 모델 학습 (Fine-tuning)
+├── HQS-Unrolled/            # Unrolled Network 기반 구현부  
+│   ├── run_hqs_fnaf.py      # HQS Unrolled 모델 학습 및 테스트 (Full-tuning, LoRA 등)  
+│   ├── run_nafnet.py        # 순수 NAFNet(HQS 제외) 학습 코드  
+│   ├── compare_models.py    # 다양한 튜닝 전략이 적용된 모델 성능 일괄 비교  
+│   ├── experi.py            # 실제 노이즈와 맵 노이즈 불일치(Mismatch) 실험  
+│   ├── lora.py              # NAFNet의 Conv2d 레이어에 적용할 LoRA 모듈  
+│   └── visualize_deblur.py  # 블러 커널 적용 및 복원 결과 시각화  
+│  
+└── kernels_12.npy           # 12종류의 Blur Kernel 데이터 (공통)  
+```
+
+## Requirements  
+Python 3.8+
+
+PyTorch
+
+OpenCV (cv2)
+
+NumPy
+
+Matplotlib
+
+## 🚀 Usage
+```text
+1. HQS-PnP 모델 사용법
+# NAFNet 모델 학습 (Fine-tuning)
 python HQS-PnP/train.py 
 
 # Denoising 검증
 python HQS-PnP/valid.py 
 
 # 특정 커널에 대한 Deblurring 시각화 및 검증
-python HQS-PnP/valid_deblur.py 
-2. HQS-Unrolled 모델 사용법HQS 과정을 Network에 풀어내어 (Unrolled) 학습하는 방식입니다. 다양한 튜닝 전략(Full Fine-tuning, LoRA 등)을 지원합니다.Bash# 전체 파라미터 학습 (Full Fine-tuning)
+python HQS-PnP/valid_deblur.py
+
+2. HQS-Unrolled 모델 사용법
+다양한 튜닝 전략(Full Fine-tuning, LoRA 등)을 지원합니다.
+
+# 전체 파라미터 학습 (Full Fine-tuning)
 python HQS-Unrolled/run_hqs_fnaf.py --full-tuning --full-lr 1e-6
 
 # LoRA(Low-Rank Adaptation)를 적용하여 가볍게 학습
@@ -43,4 +101,16 @@ python HQS-Unrolled/visualize_deblur.py --kernel_idx 10 --sigma 50
 
 # 학습된 여러 모델들의 PSNR 및 시각적 결과 비교
 python HQS-Unrolled/compare_models.py --sigma 50 --num-samples 10
-📊 Key ResultsDenoising Performance: 강한 노이즈($\sigma=50, 70$) 환경에서도 정량적(PSNR) 수치 향상 및 고주파 디테일의 성공적인 복원을 확인했습니다.Deblurring Generalization: Denoising Task만으로 학습된 FFF-NAF(Full Fine-Tuning) 모델이 12종의 다양한 Blur Kernel 환경에서도 강력한 Deblurring 일반화 성능을 입증했습니다.Tuning Strategies: HQS-Unrolled 환경에서 모델 전체를 학습하는 FFF-NAF가 가장 높은 성능을 보였으며, 효율적인 파라미터 학습을 위해 LoRA를 도입한 LoF-NAF 모델도 유의미한 성능을 기록했습니다.
+```
+
+
+## 📊 Key Results
+Denoising Performance: 강한 노이즈($\sigma=50, 70$) 환경에서도 정량적(PSNR) 수치 향상 및 유의미한 복원 성능을 달성했습니다.   
+Deblurring Generalization: Denoising Task만으로 학습된 모델이 12종의 다양한 Blur Kernel 환경에서도 강력한 Deblurring 일반화 성능을 입증했습니다.  
+Tuning Strategies: HQS-Unrolled 환경에서 모델 전체를 통째로 학습시킨 FFF-NAF 모델이 가장 우수한 성능을 보였습니다.  
+
+## 💡 Future & Extra Works  
+Artifact Removal: 이미지 내 객체 주변에 생기는 Ringing Artifact를 처리하는 방법론 연구가 필요합니다.  
+Other Restoration Tasks: HQS의 Prior Term을 NAFNet 대신 Diffusion 모델로 대체하여 Inpainting이나 Super-Resolution Task로의 확장을 고려할 수 있습니다.  
+Noise Mismatch Experiment: 실제 노이즈(Actual Noise)보다 모델에 주입되는 노이즈 맵(Noise Map)의 수치가 클 때(예: $\sigma_{real}=40, \sigma_{map}=70$) 선명도를 조절하는 장치로서의 가능성을 확인했습니다.
+
