@@ -4,7 +4,7 @@
 
 ## ∎ Algorithm Overview
 
-### HQS Optimization
+### ∎ HQS Optimization
 흐릿한 이미지($y$)에서 깨끗한 이미지($x$)를 찾으려면 다음을 최소화해야 합니다.
 
 $$\hat{x} = \arg\min_x ||Ax-y||^2 + \lambda\Phi(x)$$ 
@@ -19,7 +19,7 @@ $$x_{k+1} = \arg\min_x ||Ax-y||^2 + \mu||x-z_k||^2$$
 
 $$z_{k+1} = \arg\min_z \frac{\mu}{2}||x_{k+1}-z||^2 + \lambda\Phi(z)$$ 
 
-### Network Structure
+### ∎ Network Structure
 ```text
 Input (noisy y + noise map) ──→ [HQS Iterations] ──→ Output (restored x)
                                      ↓
